@@ -22,6 +22,7 @@ import (
 	"container/heap"
 	"encoding/gob"
 	"sort"
+	"sync"
 
 	"github.com/dgryski/go-sip13"
 )
@@ -44,6 +45,7 @@ func (elts elementsByCountDescending) Swap(i, j int) { elts[i], elts[j] = elts[j
 type keys struct {
 	m    map[string]int
 	elts []Element
+	l    *sync.RWMutex
 }
 
 // Implement the container/heap interface
@@ -56,8 +58,10 @@ func (tk *keys) Swap(i, j int) {
 
 	tk.elts[i], tk.elts[j] = tk.elts[j], tk.elts[i]
 
+	tk.l.Lock()
 	tk.m[tk.elts[i].Key] = i
 	tk.m[tk.elts[j].Key] = j
+	tk.l.Unlock()
 }
 
 func (tk *keys) Push(x interface{}) {
@@ -70,7 +74,9 @@ func (tk *keys) Pop() interface{} {
 	var e Element
 	e, tk.elts = tk.elts[len(tk.elts)-1], tk.elts[:len(tk.elts)-1]
 
+	tk.l.Lock()
 	delete(tk.m, e.Key)
+	tk.l.Unlock()
 
 	return e
 }
@@ -86,7 +92,7 @@ type Stream struct {
 func New(n int) *Stream {
 	return &Stream{
 		n:      n,
-		k:      keys{m: make(map[string]int), elts: make([]Element, 0, n)},
+		k:      keys{m: make(map[string]int), elts: make([]Element, 0, n), l: &sync.RWMutex{}},
 		alphas: make([]int, n*6), // 6 is the multiplicative constant from the paper
 	}
 }
@@ -102,7 +108,11 @@ func (s *Stream) Insert(x string, count int) Element {
 	xhash := reduce(sip13.Sum64Str(0, 0, x), len(s.alphas))
 
 	// are we tracking this element?
-	if idx, ok := s.k.m[x]; ok {
+	s.k.l.RLock()
+	idx, ok := s.k.m[x]
+	s.k.l.RUnlock()
+
+	if ok {
 		s.k.elts[idx].Count += count
 		e := s.k.elts[idx]
 		heap.Fix(&s.k, idx)
@@ -140,10 +150,12 @@ func (s *Stream) Insert(x string, count int) Element {
 	}
 	s.k.elts[0] = e
 
+	s.k.l.Lock()
 	// we're not longer monitoring minKey
 	delete(s.k.m, minKey)
 	// but 'x' is as array position 0
 	s.k.m[x] = 0
+	s.k.l.Unlock()
 
 	heap.Fix(&s.k, 0)
 	return e
@@ -160,8 +172,12 @@ func (s *Stream) Keys() []Element {
 func (s *Stream) Estimate(x string) Element {
 	xhash := reduce(sip13.Sum64Str(0, 0, x), len(s.alphas))
 
+	s.k.l.RLock()
+	idx, ok := s.k.m[x]
+	s.k.l.RUnlock()
+
 	// are we tracking this element?
-	if idx, ok := s.k.m[x]; ok {
+	if ok {
 		e := s.k.elts[idx]
 		return e
 	}
@@ -180,9 +196,14 @@ func (s *Stream) GobEncode() ([]byte, error) {
 	if err := enc.Encode(s.n); err != nil {
 		return nil, err
 	}
+
+	s.k.l.RLock()
 	if err := enc.Encode(s.k.m); err != nil {
+		s.k.l.RUnlock();
 		return nil, err
 	}
+	s.k.l.RUnlock()
+
 	if err := enc.Encode(s.k.elts); err != nil {
 		return nil, err
 	}
@@ -197,9 +218,12 @@ func (s *Stream) GobDecode(b []byte) error {
 	if err := dec.Decode(&s.n); err != nil {
 		return err
 	}
+	s.k.l.Lock()
 	if err := dec.Decode(&s.k.m); err != nil {
+		s.k.l.Unlock()
 		return err
 	}
+	s.k.l.Unlock()
 	if err := dec.Decode(&s.k.elts); err != nil {
 		return err
 	}
