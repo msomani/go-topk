@@ -66,7 +66,9 @@ func (tk *keys) Swap(i, j int) {
 
 func (tk *keys) Push(x interface{}) {
 	e := x.(Element)
+	tk.l.Lock()
 	tk.m[e.Key] = len(tk.elts)
+	tk.l.Unlock()
 	tk.elts = append(tk.elts, e)
 }
 
@@ -199,7 +201,7 @@ func (s *Stream) GobEncode() ([]byte, error) {
 
 	s.k.l.RLock()
 	if err := enc.Encode(s.k.m); err != nil {
-		s.k.l.RUnlock();
+		s.k.l.RUnlock()
 		return nil, err
 	}
 	s.k.l.RUnlock()
